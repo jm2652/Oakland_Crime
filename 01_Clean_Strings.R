@@ -1,24 +1,13 @@
 # TODO: 
+# • change homicide to death
 # • run through and prune code
 # • check how many of the main categories are covered (can plot logs)
 #   and add more
 
-library(dplyr)
-library(readr)
-library(stringr)
-library(arrow)
-
-# Import crime
-crime1.0 <- read_rds("crime1.0.rds")
 
 
 
-distcrimes <- crimexyDT |> 
-    group_by(CrimeType) |> 
-    count() |> 
-    arrange(desc(n))
-
-
+# Functions ---------------------------------------------------------------
 
 #TODO: remove dontuse; then refactor vectors to simplify
 # Function to create vectors of crime strings
@@ -69,26 +58,75 @@ mk_str_vec <- function(corr = NULL, yes1, yes2 = NULL, no1 = NULL, no2 = NULL, v
     print(vec)
 }
 
+mk_str_vec <- function(corr = NULL, yes1, yes2 = NULL, no1 = NULL, no2 = NULL, vector = NULL) {
+    if (is.null(vector))  vec <-  c()
+    if (!is.null(vector)) {
+        vec <-  vector
+    }
+    
+    # two exception strings
+    if (!is.null(no1) & !is.null(no2) & is.null(yes2)) {
+        vec <- vec |> append(
+            distcrimes$Crimetype[str_detect(
+                                         distcrimes$Crimetype, yes1) &
+                                     !str_detect(
+                                         distcrimes$Crimetype, no1) &
+                                     !str_detect(
+                                         distcrimes$Crimetype, no2)])
+        
+    } else if (!is.null(no1) & !is.null(no2) & !is.null(yes2)) {
+        vec <- vec |> append(
+            distcrimes$Crimetype[str_detect(
+                                         distcrimes$Crimetype, yes1) &
+                                     str_detect(
+                                         distcrimes$Crimetype, yes2) &
+                                     !str_detect(
+                                         distcrimes$Crimetype, no1) &
+                                     !str_detect(
+                                         distcrimes$Crimetype, no2)])
+    } else if (!is.null(no1) & is.null(yes2)) {
+        vec <- vec |> append(
+            distcrimes$Crimetype[str_detect(distcrimes$Crimetype, yes1) &
+                                     !str_detect(distcrimes$Crimetype, no1)])
+    } else if (!is.null(no1) & !is.null(yes2)) {
+        vec <- vec |> append(
+            distcrimes$Crimetype[str_detect(distcrimes$Crimetype, yes1) &
+                                     str_detect(distcrimes$Crimetype, yes2) &
+                                     !str_detect(distcrimes$Crimetype, no1)])
+    }  else if (is.null(no1) & is.null(no2) & !is.null(yes2)) {
+        vec <- vec |> append(
+            distcrimes$Crimetype[str_detect(distcrimes$Crimetype, yes1) &
+                                     str_detect(distcrimes$Crimetype, yes2)])
+    } else {    
+        vec <- vec |> append(
+            distcrimes$Crimetype[str_detect(distcrimes$Crimetype, yes1)])
+    }
+    if (!is.null(corr)) {print(paste("Vector: ", corr))}
+    print(vec)
+}
+
 
 # helper function "search string" for searching erroneous strings
 ss <- function(string) {
-    distcrimes$CrimeType[str_detect(distcrimes$CrimeType, string)]
+    distcrimes$Crimetype[str_detect(distcrimes$Crimetype, string)]
 }
+
 
 # TODO: find way to remove duplicates
 # helper function "search Description" for searching erroneous strings
 ssde <- function(string) {
-    crimexyDT$Description[str_detect(crimexyDT$Description, string)]
+    crimeDT$Description[str_detect(crimexyDT$Description, string)]
 }
 ssde("MURDER")
 
 # helper function "crosscheck" for crosschecking description
 cch <- function(string) {
-    crimexyDT |> filter(CrimeType == string) |> select(Description)
+    crimeDT |> filter(Crimetype == string) |> select(Description)
 }
 
 
-### Create vectors for major crimes
+
+# Create crime vectors ----------------------------------------------------
 
 # Arson	
 arson <- mk_str_vec(corr = "ARSON",
@@ -136,6 +174,7 @@ disturb_peace <- mk_str_vec(corr = "DISTURB PEACE",
                             yes1 = "DISTURB")
 # disturb_peace <- disturb_peace |> append("disturb peace")
 
+# TODO: add to death
 # Manslaughter
 manslaughter <- ss("MANSLA")
 # manslaughter <- manslaughter |> append("manslaughter")
@@ -176,6 +215,18 @@ fraud <- ss("FRAUD")
 # fraud <- fraud |> append("fraud")
 
 
+# Unexplained death
+# 
+# Change Crimetype of homicides with description "SC UNEXPLAINED DEATH"
+# Note: modifies Crimetype by reference
+crimeDT[Crimetype == "HOMICIDE" &
+                       Description == "SC UNEXPLAINED DEATH", 
+                   Crimetype := "SC UNEXPLAINED DEATH"]
+
+unexdeath <- 
+    distcrimes$Crimetype[str_detect(distcrimes$Crimetype, "UNEX") &
+                             !str_detect(distcrimes$Crimetype, "HOM")]
+
 
 # TODO: Rework homicide vector
 crime |> filter(CrimeType == "HOMICIDE" & year(DateTime) == 2021) |> 
@@ -187,6 +238,9 @@ crime |>
 crime |> 
     filter(CrimeType == "HOMICIDE" & Description != "SC UNEXPLAINED DEATH") |>
     count()
+crimeDT |> filter(Crimetype == "HOMICIDE") |> select(Description) |>
+    unique() |> 
+    View()
 
 
 # Homicide	
@@ -198,6 +252,8 @@ homicide <- mk_str_vec("HOMICIDE",
                        yes1 = "HOMI") |> 
     append(ss("^MURDER"))
 l.homicide <- c(attempt_hom, homicide)
+
+
 #TODO: reconsider whether to put attempt_hom in homicide or assault
 # l.homicide <- l.homicide |> append("homicide")
 
@@ -420,6 +476,8 @@ l.major <- read_rds("l.major.rds")
 # separate out major crimes
 majcrime <-  crimexyDT |>
     filter(CrimeType %in% l.major)
+majcrime <-  crimeDT |>
+    filter(Crimetype %in% l.major)
 
 
 # Factorize CrimeTypes in majorcrime
@@ -447,6 +505,33 @@ majorcrime <- majcrime |>
                                  "vandalism" = vandalism,
                                  "traffic" = traffic
         ))
+# for crimeDT
+majorcrime <- majcrime |> 
+    mutate(
+        Crimetype = fct_collapse(Crimetype,
+                                 "arson" = arson,
+                                 "assault" = l.assault,
+                                 "auto theft" = l.auto_theft,
+                                 "auto burglary" = l.auto_burg,
+                                 "carjacking" = carjacking,
+                                 "burglary" = l.burglary,
+                                 "disturb peace" = disturb_peace,
+                                 "drug sales" = l.drugsale,
+                                 "drugs/alcohol" = l.drugsalc,
+                                 "dui" = dui,
+                                 "fraud" = fraud,
+                                 "homicide" = l.homicide,
+                                 "manslaughter" = manslaughter,
+                                 "robbery" = l.robbery,
+                                 "sex offense" = l.sex_offense,
+                                 "theft" = theft,
+                                 "traffic" = traffic,
+                                 "weapons" = l.weapon,
+                                 "vandalism" = vandalism,
+                                 "traffic" = traffic
+        ))
+
+majorcrime  |> filter(useful::upper.case(Crimetype)) |> View()
 # TODOLAST: To see whether can automate the manual entry of categories as the 
 # name of the vector.
 # https://stackoverflow.com/questions/67142718/embracing-operator-inside-mutate-function
@@ -459,11 +544,16 @@ majorcrime <- majcrime |>
 # separate out "minor" (in that minor == !major) crimes
 "%!in%" <- function(x,y) {!(x %in% y)}
 mincrime <- crimexyDT |> filter(CrimeType %!in% l.major)
+mincrime <- crimeDT |> filter(Crimetype %!in% l.major)
 crimexyDT |> colnames()
 # Lump all non-major crimes into one factor
 minorcrime <- mincrime |> mutate(
     CrimeType = fct_lump_n(CrimeType, n = 0)
 )
+minorcrime <- mincrime |> mutate(
+    Crimetype = fct_lump_n(Crimetype, n = 0)
+)
+
 
 mincrime |> 
     group_by(CrimeTypeOrig) |>
@@ -479,13 +569,17 @@ minorcrime |>  # lump didn't work. TODO
     arrange(desc(n)) |> 
     View()
 
+
+
 # Combine
 minmaj <- list(majorcrime, minorcrime)
 # NEW: changed name crime2 to crime1.1
 crimexyDT1.1 <- rbindlist(minmaj) |> data.table()
+crimeDT2 <- rbindlist(minmaj) |> data.table()
 
+write_rds(crimeDT2, "crimeDT2.rds")
 
-
+crimeDT2 <- read_rds("crimeDT2.rds")
 
 
 
