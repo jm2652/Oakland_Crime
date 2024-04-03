@@ -1,50 +1,36 @@
 library(sf)
 library(readr)
 library(dplyr)
+library(purrr)
 
 
 # Setup/file preparation --------------------------------------------------
 
-# Load neighborhood and police beat shapefiles
-setwd("../../Oakland_Mapping/Police_Beats")
-policebeats <- read_sf("policebeats.shp")
-# worked on this first but it was the original file that I hadn't corrected.
-# But it doesn't throw vertex errors so I'll use it
-setwd("../Neighborhoods/neighborhoods_20231030")
-neighbs <- read_sf("geo_export_8681fdd8-61be-4add-80cb-f7bc61dae57f.shp")
-# TODO: use this once the .shp is corrected
-# setwd("Oakland_Mapping/Neighborhoods/Neighborhoods_edit")
-# neighbs <- read_sf("neighborhoods_edit.shp")
-setwd("../../../Oakland_Projects/Oakland_Crime")
-
-
-# process mapfiles
-neighbs <- neighbs |> 
-    select(Neighborhood = neighbhd,
-           geometry) |> 
-    st_transform(crs = 4269) |> 
-    arrange(Neighborhood)
-
-# TODO: change these in shapefile
-neighbs$Neighborhood[22] <- "Coliseum Airport"
-neighbs$Neighborhood[31] <- "East 14th Street Business 2"
-
-policebeats <- policebeats |> 
-    select(Beat = name,
-           # District = pol_dist, # of course it's wrong. TODO:
-           # create df with correct districts
-           geometry) |> 
-    st_transform(crs = 4269) |> 
-    arrange(Beat)
-
 
 # Import demographic files
-popacs <- read_rds("popacs.rds")
-incageacs <- read_rds("incageacs.rds")
-raceacs <- read_rds("raceacs.rds")
+source("Census.R")
+source("01_Clean_Geography.R")
 
 
 # Create demographic dataframes -------------------------------------------
+
+# census tract/block group demographics. As granular as possible
+demoacs <-
+    popacs |> 
+    # drop geometry to do nonspatial left join
+    st_drop_geometry() |> 
+    left_join(incageacs |> select(Year, GEOID, medage, medinc),
+              join_by(Year, GEOID)) |>
+    left_join(raceacs |> select(Year, GEOID, White:Hispanic, geometry),
+              join_by(Year, GEOID, geometry)) |> 
+    relocate(geometry, .after = Hispanic)
+# clean up some columns
+demoacs <-
+    demoacs |> select(c(-c(moe, variable), Pop = estimate))
+# add back geometry
+st_geometry(demoacs) <- demoacs$geometry
+
+demoacs |> write_rds("demoacs.rds")
 
 # TODO: see if this is still necessary or if possible to use vector of
 # years from the demography dfs
@@ -58,23 +44,36 @@ years <- c(2010:2022)
 # the block group's area, though this is not always the case.
 
 
-# calculate neighborhood population
-narea_weights_pop <- function(neigh, demog) {
-    # define which neighborhood / zone
-    zone <- neighbs[neighbs$Neighborhood == neigh, drop = F]
+# Update 4/3/24: Refactored functions by breaking into smaller component
+# functions and calling inside functions. Next step is to create function
+# factories.
+# Also made a small performance improvement by dropping geometries
+# before computing summary statistics.
+
+# Break into smaller functions
+
+# Create zone
+create_zone <- function(neigh, shapefile, demog) {
+    # define area of interest
+    zone <- shapefile[shapefile[[1]] == neigh, drop = F]
+   
+    ## Superassign next 2 vars to parent environment, for use in main function
     # clip block groups to fit boundaries of zone
-    zonearea <- st_intersection(demog, zone) |> 
+    zonearea <<- st_intersection(demog, zone) |> 
         suppressWarnings()
     # list GEOIDs that fall within zone
-    zonegeos <- zonearea$GEOID
-    
-    # compare total area of GEOIDs with clipped area
-    # filter only GEOIDs that intersect with the zone
-    comparison <- 
+    zonegeos <<- zonearea$GEOID
+}
+create_zone("Chinatown", neighbs, popacs)
+
+# Compute area weights
+compute_area <- function(demog, zonegeos, GEOID) {
+    computed_area <- 
         demog |> 
         filter(GEOID %in% zonegeos) |> 
         arrange(GEOID) |> # ensure that rows are aligned for cbind
-        # get total area of block groups and area of clipped block groups by GEOID
+        # get total area of block groups and 
+        #   area of clipped block groups by GEOID
         group_by(GEOID) |> 
         # total area of each GEOID 
         summarise(AreaTotal = st_area(geometry)) |> 
@@ -83,348 +82,258 @@ narea_weights_pop <- function(neigh, demog) {
             zonearea |> 
                 arrange(GEOID) |>
                 group_by(GEOID) |> 
-                mutate(AreaWithin = st_area(geometry))
-        ) |> 
+                mutate(AreaWithin = st_area(geometry)))
+    computed_area
+}
+
+area_weights_pop <- function(computed_area) {
+    computed_area |> 
         # find proportion, stripping m^2 unit
         mutate(Proportion = as.numeric(AreaWithin / AreaTotal)) |>
-        # area weights
-        mutate(pops = estimate * Proportion)
+            # area weights
+            mutate(pops = estimate * Proportion)
+}
+weighted_sum_pop <- function(comparison_area) {
     # return weighted sum: population estimate taking into account
     # area of GEOID
-    sum(comparison$estimate * comparison$Proportion)
+    sum(comparison_area$estimate * comparison_area$Proportion)
+}
+
+# calculate neighborhood population
+narea_weights_pop <- function(neigh, shapefile, demog) {
+    
+    create_zone(neigh, shapefile, demog)
+    
+    comparison <- 
+        compute_area(demog, zonegeos, GEOID) |>
+        area_weights_pop()
+    
+    weighted_sum_pop(comparison)
 }
 # test
-narea_weights_pop("Chinatown", pop20acs)
+narea_weights_pop(
+    "Chinatown", neighbs, popacs |> 
+        filter(Year == 2020))
+
 
 # calculate police beat population
-pbarea_weights_pop <- function(pb, demog) {
-    # define which police beat / zone
-    zone <- policebeats[policebeats$Beat == pb, drop = F]
-    # clip block groups to fit boundaries of zone
-    zonearea <- st_intersection(demog, zone) |> 
-        suppressWarnings()
-    # list GEOIDs that fall within zone
-    zonegeos <- zonearea$GEOID
+pbarea_weights_pop <- function(beat, shapefile, demog) {
     
-    # compare total area of GEOIDs with clipped area
-    # filter only GEOIDs that intersect with the zone
+    create_zone(beat, shapefile, demog)
+    
     comparison <- 
-        demog |> 
-        filter(GEOID %in% zonegeos) |> 
-        arrange(GEOID) |> # ensure that rows are aligned for cbind
-        # get total area of block groups and area of clipped block groups by GEOID
-        group_by(GEOID) |> 
-        # total area of each GEOID 
-        summarise(AreaTotal = st_area(geometry)) |> 
-        # join with zone-clipped area of each GEOID
-        cbind(
-            zonearea |> 
-                arrange(GEOID) |>
-                group_by(GEOID) |> 
-                mutate(AreaWithin = st_area(geometry))
-        ) |> 
-        # find proportion, stripping m^2 unit
-        mutate(Proportion = as.numeric(AreaWithin / AreaTotal)) |>
-        # area weights
-        mutate(pops = estimate * Proportion)
-    # return weighted sum: population estimate taking into account
-    # area of GEOID
-    sum(comparison$estimate * comparison$Proportion)
+        compute_area(demog, zonegeos, GEOID) |>
+        area_weights_pop()
+    
+    weighted_sum_pop(comparison)
 }
 # test
-pbarea_weights_pop("12Y", pop20acs)
+pbarea_weights_pop(
+    "02X", policebeats, popacs |> 
+        filter(Year == 2020))
 
 
-# Race --------------------------------------------------------------------
-
-# calculate neighborhood race
-narea_weights_race <- function(neigh, demog) {
-    # define which neighborhood / zone
-    zone <- neighbs[neighbs$Neighborhood == neigh, drop = F]
-    # clip block groups to fit boundaries of zone
-    zonearea <- st_intersection(demog, zone) |> 
-        suppressWarnings()
-    # list GEOIDs that fall within zone
-    zonegeos <- zonearea$GEOID
-    
-    # compare total area of GEOIDs with clipped area
-    # filter only GEOIDs that intersect with the zone
-    comparison <- 
-        demog |> 
-        filter(GEOID %in% zonegeos) |> 
-        arrange(GEOID) |> # ensure that rows are aligned for cbind
-        # get total area of block groups and area of clipped block groups by GEOID
-        group_by(GEOID) |> 
-        # total area of each GEOID 
-        summarise(AreaTotal = st_area(geometry)) |> 
-        # join with zone-clipped area of each GEOID
-        cbind(
-            zonearea |> 
-                arrange(GEOID) |>
-                group_by(GEOID) |> 
-                mutate(AreaWithin = st_area(geometry))
-        ) |> 
+# Calculate race
+area_weights_race <- function(computed_area) {
+    computed_area |> 
         # find proportion, stripping m^2 unit
         mutate(Proportion = as.numeric(AreaWithin / AreaTotal),
                weights = Proportion / sum(Proportion))
-    # return weighted mean of race
-    comparison |> 
-        group_by(Neighborhood) |> # to retain column for joining function output
+}
+weighted_sum_race <- function(comparison_area) {
+    comparison_area |> 
+        st_drop_geometry() |> 
+        # to retain column for joining function output
+        group_by(comparison_area[[15]]) |> # comparison[[15]] is beat or neighorhood
         summarize(
             across(White:Hispanic,
-            \(x) with(comparison, sum(x * weights, na.rm = TRUE) /
-                              sum(weights, na.rm = TRUE)))) |> 
-        st_drop_geometry()
-    # This will be harder to do. TODO: defend against NAs in means across
+                   \(x) with(comparison_area, sum(x * weights, na.rm = TRUE) /
+                                 sum(weights, na.rm = TRUE))))
+        
 }
 
 
-
-# calculate police beat race
-pbarea_weights_race <- function(pb, demog) {
-    # define which neighborhood / zone
-    zone <- policebeats[policebeats$Beat == pb, drop = F]
-    # clip block groups to fit boundaries of zone
-    zonearea <- st_intersection(demog, zone) |> 
-        suppressWarnings()
-    # list GEOIDs that fall within zone
-    zonegeos <- zonearea$GEOID
+# Calculate neighborhood race
+narea_weights_race <- function(neigh, shapefile, demog) {
     
-    # compare total area of GEOIDs with clipped area
-    # filter only GEOIDs that intersect with the zone
+    create_zone(neigh, shapefile, demog)
+    
     comparison <- 
-        demog |> 
-        filter(GEOID %in% zonegeos) |> 
-        arrange(GEOID) |> # ensure that rows are aligned for cbind
-        # get total area of block groups and area of clipped block groups by GEOID
-        group_by(GEOID) |> 
-        # total area of each GEOID 
-        summarise(AreaTotal = st_area(geometry)) |> 
-        # join with zone-clipped area of each GEOID
-        cbind(
-            zonearea |> 
-                arrange(GEOID) |>
-                group_by(GEOID) |> 
-                mutate(AreaWithin = st_area(geometry))
-        ) |> 
-        # find proportion, stripping m^2 unit
-        mutate(Proportion = as.numeric(AreaWithin / AreaTotal),
-               weights = Proportion / sum(Proportion))
+        compute_area(demog, zonegeos, GEOID) |>
+        area_weights_race()
+    
     # return weighted mean of race
-    comparison |> 
-        group_by(Beat) |> # to retain column for joining function output
-        summarize(
-            across(White:Hispanic,
-                   \(x) with(comparison, sum(x * weights, na.rm = TRUE) /
-                                 sum(weights, na.rm = TRUE)))) |> 
-        st_drop_geometry()
-    # This will be harder to do. TODO: defend against NAs in means across
+    weighted_sum_race(comparison)
 }
 # test
-pbarea_weights_race("12Y", raceacs |> filter(Year == 2015))
+narea_weights_race(
+    "Chinatown", neighbs, raceacs |> 
+        filter(Year == 2020))
 
-
-
-# calculate neighborhood income
-narea_weights_medinc <- function(neigh, demog) {
-    # define which neighborhood / zone
-    zone <- neighbs[neighbs$Neighborhood == neigh, drop = F]
-    # clip block groups to fit boundaries of zone
-    zonearea <- st_intersection(demog, zone) |> 
-        suppressWarnings()
-    # list GEOIDs that fall within zone
-    zonegeos <- zonearea$GEOID
+# Calculate police beat race
+pbarea_weights_race <- function(beat, shapefile, demog) {
     
-    # compare total area of GEOIDs with clipped area
-    # filter only GEOIDs that intersect with the zone
+    create_zone(beat, shapefile, demog)
+    
     comparison <- 
-        demog |> 
-        filter(GEOID %in% zonegeos) |> 
-        arrange(GEOID) |> # ensure that rows are aligned for cbind
-        # get total area of block groups and area of clipped block groups by GEOID
-        group_by(GEOID) |> 
-        # total area of each GEOID 
-        summarise(AreaTotal = st_area(geometry)) |> 
-        # join with zone-clipped area of each GEOID
-        cbind(
-            zonearea |> 
-                arrange(GEOID) |>
-                group_by(GEOID) |> 
-                mutate(AreaWithin = st_area(geometry))
-        ) |> 
+        compute_area(demog, zonegeos, GEOID) |>
+        area_weights_race()
+    
+    # return weighted mean of race
+    weighted_sum_race(comparison)
+}
+# test
+pbarea_weights_race(
+    "01X", policebeats, raceacs |> 
+        filter(Year == 2020))
+
+
+# Calculate neighborhood income
+area_weights_income <- function(computed_area) {
+    computed_area |> 
         # find proportion, stripping m^2 unit
         mutate(Proportion = as.numeric(AreaWithin / AreaTotal)) |>
         mutate(weights = Proportion / sum(Proportion))
-    # return weighted sum: population estimate taking into account
-    # area of GEOID
-    # weighted.mean(comparison$estimate * comparison$Proportion)
-    
-    # doesn't do na.rm; so use below instead
-    # weighted.mean(comparison$medincE, as.numeric(comparison$Proportion))
-    
-    # manual weighted means
-    with(
-        # prevent NAs from enlarging denominator
-        comparison |> filter(!is.na(medinc)), 
-         sum(medinc * weights, na.rm = TRUE) / 
-             sum(weights, na.rm = TRUE))
 }
-# test
-narea_weights_medinc("Allendale")
-
-
-# calculate police beat income
-# Note: ages are not median ages found in ACS; they are averages 
-pbarea_weights_medinc <- function(pb, demog) {
-    # define which neighborhood / zone
-    zone <- policebeats[policebeats$Beat == pb, drop = F]
-    # clip block groups to fit boundaries of zone
-    zonearea <- st_intersection(demog, zone) |> 
-        suppressWarnings()
-    # list GEOIDs that fall within zone
-    zonegeos <- zonearea$GEOID
-    
-    # compare total area of GEOIDs with clipped area
-    # filter only GEOIDs that intersect with the zone
-    comparison <- 
-        demog |> 
-        filter(GEOID %in% zonegeos) |> 
-        arrange(GEOID) |> # ensure that rows are aligned for cbind
-        # get total area of block groups and area of clipped block groups by GEOID
-        group_by(GEOID) |> 
-        # total area of each GEOID 
-        summarise(AreaTotal = st_area(geometry)) |> 
-        # join with zone-clipped area of each GEOID
-        cbind(
-            zonearea |> 
-                arrange(GEOID) |>
-                group_by(GEOID) |> 
-                mutate(AreaWithin = st_area(geometry))
-        ) |> 
-        # find proportion, stripping m^2 unit
-        mutate(Proportion = as.numeric(AreaWithin / AreaTotal)) |>
-        mutate(weights = Proportion / sum(Proportion))
+weighted_sum_income <- function(comparison_area) {
     # return weighted sum: population estimate taking into account
-    # area of GEOID
-    # weighted.mean(comparison$estimate * comparison$Proportion)
-    
-    # doesn't do na.rm; so use below instead
-    # weighted.mean(comparison$medincE, as.numeric(comparison$Proportion))
-    
-    # manual weighted means
+    #   area of GEOID
+    # manual weighted means b/c weighted.mean() doesn't accept na.rm arg
     with(
         # prevent NAs from enlarging denominator
-        comparison |> filter(!is.na(medinc)), 
+        comparison_area |> filter(!is.na(medinc)), 
         sum(medinc * weights, na.rm = TRUE) / 
             sum(weights, na.rm = TRUE))
 }
-# test
-pbarea_weights_medinc("01X")
 
-# calculate neighborhood age
-# Note: ages are not median ages found in ACS; they are averages 
-narea_weights_medage <- function(neigh, demog) {
-    # define which neighborhood / zone
-    zone <- neighbs[neighbs$Neighborhood == neigh, drop = F]
-    # clip block groups to fit boundaries of zone
-    zonearea <- st_intersection(demog, zone) |> 
-        suppressWarnings()
-    # list GEOIDs that fall within zone
-    zonegeos <- zonearea$GEOID
+narea_weights_medinc <- function(neigh, shapefile, demog) {
+
+    create_zone(neigh, shapefile, demog)
     
-    # compare total area of GEOIDs with clipped area
-    # filter only GEOIDs that intersect with the zone
     comparison <- 
-        demog |> 
-        filter(GEOID %in% zonegeos) |> 
-        arrange(GEOID) |> # ensure that rows are aligned for cbind
-        # get total area of block groups and area of clipped block groups by GEOID
-        group_by(GEOID) |> 
-        # total area of each GEOID 
-        summarise(AreaTotal = st_area(geometry)) |> 
-        # join with zone-clipped area of each GEOID
-        cbind(
-            zonearea |> 
-                arrange(GEOID) |>
-                group_by(GEOID) |> 
-                mutate(AreaWithin = st_area(geometry))
-        ) |> 
+        compute_area(demog, zonegeos, GEOID) |>
+        area_weights_income()
+    
+    weighted_sum_income(comparison)
+}
+# test
+narea_weights_medinc(
+    "Chinatown", neighbs, incageacs |> 
+        filter(Year == 2020))
+
+# TODO: may have to substitute Medinc and Medage for medinc and medage once
+# there is a new demographic file
+
+# calculate police beat income
+# Note: ages are not median ages found in ACS; they are averages 
+pbarea_weights_medinc <- function(beat,  shapefile, demog) {
+    
+    create_zone(beat, shapefile, demog)
+    
+    comparison <- 
+        compute_area(demog, zonegeos, GEOID) |>
+        area_weights_income()
+    
+    weighted_sum_income(comparison)
+}
+# test
+pbarea_weights_medinc(
+    "01X", policebeats, incageacs |> 
+        filter(Year == 2020))
+
+
+
+# Calculate neighborhood age
+
+area_weights_age <- function(computed_area) {
+    computed_area |> 
         # find proportion, stripping m^2 unit
         mutate(Proportion = as.numeric(AreaWithin / AreaTotal)) |>
         mutate(weights = Proportion / sum(Proportion))
+}
+weighted_sum_age <- function(comparison_area) {
     # return weighted sum: population estimate taking into account
-    # area of GEOID
-    # weighted.mean(comparison$estimate * comparison$Proportion)
-    
-    # doesn't do na.rm; so use below instead
-    # weighted.mean(comparison$medageE, as.numeric(comparison$Proportion),
-    #               na.rm = TRUE)
-    
-    # manual weighted means
+    #   area of GEOID
+    # manual weighted means b/c weighted.mean() doesn't accept na.rm arg
     with(
         # prevent NAs from enlarging denominator
-        comparison |> filter(!is.na(medage)), 
+        comparison_area |> filter(!is.na(medage)), 
         sum(medage * weights, na.rm = TRUE) / 
             sum(weights, na.rm = TRUE))
 }
+
+# Note: ages are not median ages found in ACS; they are averages 
+narea_weights_medage <- function(neigh, shapefile, demog) {
+    
+    create_zone(neigh, shapefile, demog)
+    
+    comparison <- 
+        compute_area(demog, zonegeos, GEOID) |>
+        area_weights_age()
+    
+    weighted_sum_age(comparison)
+}
 # test
-narea_weights_medage("Sequoyah")
+narea_weights_medage(
+    "Chinatown", neighbs, incageacs |> 
+        filter(Year == 2020))
 
 
 # calculate police beat age
 # Note: ages are not median ages found in ACS; they are averages 
-pbarea_weights_medage <- function(pb, demog) {
-    # define which neighborhood / zone
-    zone <- policebeats[policebeats$Beat == pb, drop = F]
-    # clip block groups to fit boundaries of zone
-    zonearea <- st_intersection(demog, zone) |> 
-        suppressWarnings()
-    # list GEOIDs that fall within zone
-    zonegeos <- zonearea$GEOID
+pbarea_weights_medage <- function(beat,  shapefile, demog) {
     
-    # compare total area of GEOIDs with clipped area
-    # filter only GEOIDs that intersect with the zone
+    create_zone(beat, shapefile, demog)
+    
     comparison <- 
-        demog |> 
-        filter(GEOID %in% zonegeos) |> 
-        arrange(GEOID) |> # ensure that rows are aligned for cbind
-        # get total area of block groups and area of clipped block groups by GEOID
-        group_by(GEOID) |> 
-        # total area of each GEOID 
-        summarise(AreaTotal = st_area(geometry)) |> 
-        # join with zone-clipped area of each GEOID
-        cbind(
-            zonearea |> 
-                arrange(GEOID) |>
-                group_by(GEOID) |> 
-                mutate(AreaWithin = st_area(geometry))
-        ) |> 
-        # find proportion, stripping m^2 unit
-        mutate(Proportion = as.numeric(AreaWithin / AreaTotal)) |>
-        mutate(weights = Proportion / sum(Proportion))
-    # return weighted sum: population estimate taking into account
-    # area of GEOID
-    # weighted.mean(comparison$estimate * comparison$Proportion)
+        compute_area(demog, zonegeos, GEOID) |>
+        area_weights_age()
     
-    # doesn't do na.rm; so use below instead
-    # weighted.mean(comparison$medincE, as.numeric(comparison$Proportion))
-    
-    # manual weighted means
-    with(
-        # prevent NAs from enlarging denominator
-        comparison |> filter(!is.na(medage)), 
-        sum(medage * weights, na.rm = TRUE) / 
-            sum(weights, na.rm = TRUE))
+    weighted_sum_age(comparison)
 }
 # test
-pbarea_weights_medage("02X", incageacs |> filter(Year == 2015))
+pbarea_weights_medage(
+    "01X", policebeats, incageacs |> 
+        filter(Year == 2020))
+
+
+
+
+
+
+
+
+# TODO: Function factory --------------------------------------------------
+
+# First try creating narea_weights_pop()
+
+#Error in comparison_area$estimate : 
+# object of type 'closure' is not subsettable
+# 
+# Probably has to do with calling functions outside the environment
+area_weights_pop <- function(areaunit, shapefile) {
+    function(areaunit, shapefile, demog) {
+        
+        create_zone(areaunit, shapefile, demog)
+        
+        comparison <- 
+            compute_area(demog, zonegeos, GEOID) |>
+            area_weights_pop()
+        
+        weighted_sum_pop(comparison)
+    }
+}
+npop <- area_weights_pop(neigh, neighbs)
+npop(
+    "Chinatown", neighbs, popacs |> 
+        filter(Year == 2020))
+
 
 
 
 
 
 # Create dataframes -------------------------------------------------------
-
 
 # map/wrap functions across each year
 pbadd_stats <- function(year) {
@@ -488,15 +397,3 @@ demone <- map_df(years, nadd_stats)
 
 write_rds(demopb, "demopb.rds")
 write_rds(demone, "demone.rds")
-
-
-# TODO: populations for Shafter don't match added races. See 
-# 2022 and huge dropoffs between 2012-2013; looks like tract
-# numbers are much higher. maybe the functions somehow computed
-# block group like tract, such as adding up the number of tracts
-# instead of the number of block groups. Other vars seem fine
-# 
-demone[demone$Neighborhood %in% shafter, ] |> View()
-
-
-
