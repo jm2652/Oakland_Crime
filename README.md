@@ -14,4 +14,4 @@ The project consists of 7 components:
 
 • Data analysis and visualizations of crime trends, using regression and time series analysis to analyze trends across police beats, neighborhoods, and citywide.
 
-• Spatial analysis tools for visualizing and analyzing changes over time, including clustering (Moran's I statistic), hot spot (Getis-Ord GI statistic) analysis, and spatial regression.
+• Spatial analysis tools for visualizing and analyzing changes over time, including clustering (Moran's I statistic), hot spot (Getis-Ord GI* statistic) analysis, and spatial regression.
