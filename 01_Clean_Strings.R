@@ -1,10 +1,10 @@
+library(forcats)
+
 # TODO: 
 # • change homicide to death
 # • run through and prune code
 # • check how many of the main categories are covered (can plot logs)
 #   and add more
-
-
 
 
 # Functions ---------------------------------------------------------------
@@ -13,9 +13,7 @@
 # Function to create vectors of crime strings
 mk_str_vec <- function(corr = NULL, yes1, yes2 = NULL, no1 = NULL, no2 = NULL, vector = NULL) {
     if (is.null(vector))  vec <-  c()
-    if (!is.null(vector)) {
-        vec <-  vector
-    }
+    if (!is.null(vector)) {vec <-  vector}
     
     # two exception strings
     if (!is.null(no1) & !is.null(no2) & is.null(yes2)) {
@@ -113,9 +111,10 @@ ss <- function(string) {
 
 
 # TODO: find way to remove duplicates
+
 # helper function "search Description" for searching erroneous strings
 ssde <- function(string) {
-    crimeDT$Description[str_detect(crimexyDT$Description, string)]
+    crimeDT$Description[str_detect(crimeDT$Description, string)]
 }
 ssde("MURDER")
 
@@ -164,6 +163,10 @@ l.burglary <- c(burglary, l.auto_burg, comm_burglary)
 # l.burglary <- l.burglary |> append("burglary")
 
 # Carjacking
+# Note that since carjackings are only recorded as CARJACKING
+# in 2004, need to use Description
+crimeDT[Description == "CARJ", 
+        Crimetype := "CARJACKING"]
 carjacking <- mk_str_vec(corr = "CARJACKING",
                          yes1 = "CARJ") |> 
     append(ss("CAR J"))
@@ -173,11 +176,6 @@ carjacking <- mk_str_vec(corr = "CARJACKING",
 disturb_peace <- mk_str_vec(corr = "DISTURB PEACE",
                             yes1 = "DISTURB")
 # disturb_peace <- disturb_peace |> append("disturb peace")
-
-# TODO: add to death
-# Manslaughter
-manslaughter <- ss("MANSLA")
-# manslaughter <- manslaughter |> append("manslaughter")
 
 # Drug sales
 sale_narcotics <- mk_str_vec(corr = "SALE NARCOTICS",
@@ -222,29 +220,21 @@ fraud <- ss("FRAUD")
 crimeDT[Crimetype == "HOMICIDE" &
                        Description == "SC UNEXPLAINED DEATH", 
                    Crimetype := "SC UNEXPLAINED DEATH"]
-
-unexdeath <- 
-    distcrimes$Crimetype[str_detect(distcrimes$Crimetype, "UNEX") &
-                             !str_detect(distcrimes$Crimetype, "HOM")]
-
-
-# TODO: Rework homicide vector
-crime |> filter(CrimeType == "HOMICIDE" & year(DateTime) == 2021) |> 
-    count(CrimeType)
-# this gives a clue; will have to rework homicide
-crime |> 
-    filter(CrimeType == "HOMICIDE" & Description != "SC UNEXPLAINED DEATH") |> 
-    sample_n(20) |> select(Description)
-crime |> 
-    filter(CrimeType == "HOMICIDE" & Description != "SC UNEXPLAINED DEATH") |>
-    count()
+# check other potential erroneous "homicides"
 crimeDT |> filter(Crimetype == "HOMICIDE") |> select(Description) |>
     unique() |> 
     View()
 
+# TODO: add to death
+# Manslaughter
+manslaughter <- ss("MANSLA")
 
+unexdeath <- 
+    distcrimes$Crimetype[str_detect(distcrimes$Crimetype, "UNEX") &
+                             !str_detect(distcrimes$Crimetype, "HOM")]
+unexdeath
 # Homicide	
-
+ss("UNEX")
 attempt_hom <- mk_str_vec(corr = "ATTEMPT MURDER",
                           yes1 = "ATT",
                           yes2 = "MURD")
@@ -431,20 +421,18 @@ ss("WNT")
 
 l.major <- c(l.drugsalc, arson, l.assault, l.auto_burg, l.auto_theft, l.burglary,
              l.drugsale, l.drugsalc, l.homicide, l.robbery, l.sex_offense, l.weapon,
-             carjacking, disturb_peace, dui, fraud, vandalism, manslaughter, theft,
-             traffic)
+             carjacking, disturb_peace, dui, fraud, vandalism, theft,
+             traffic, unexdeath)
 
 
 
 
 
-
-# TODO: figure out difference between & and | in str_detect
 
 # # NOTE: Example of bad discrepancies btwn CrimeType & Description
 # crime |> filter(Description == "BURGLARY-AUTO" &
 #                     !(CrimeType %in% auto_burglary))
-
+# TODO: investigate
 
 # ss("ILLEGAL POSS ASSAULT WPN")
 
@@ -472,66 +460,39 @@ l.major <- read_rds("l.major.rds")
 # TODO: Check if it's necessary to make two dfs and bind them
 
 
-# NEW
 # separate out major crimes
-majcrime <-  crimexyDT |>
-    filter(CrimeType %in% l.major)
 majcrime <-  crimeDT |>
     filter(Crimetype %in% l.major)
 
 
-# Factorize CrimeTypes in majorcrime
-majorcrime <- majcrime |> 
-    mutate(
-        CrimeType = fct_collapse(CrimeType,
-                                 "arson" = arson,
-                                 "assault" = l.assault,
-                                 "auto theft" = l.auto_theft,
-                                 "auto burglary" = l.auto_burg,
-                                 "carjacking" = carjacking,
-                                 "burglary" = l.burglary,
-                                 "disturb peace" = disturb_peace,
-                                 "drug sales" = l.drugsale,
-                                 "drugs/alcohol" = l.drugsalc,
-                                 "dui" = dui,
-                                 "fraud" = fraud,
-                                 "homicide" = l.homicide,
-                                 "manslaughter" = manslaughter,
-                                 "robbery" = l.robbery,
-                                 "sex offense" = l.sex_offense,
-                                 "theft" = theft,
-                                 "traffic" = traffic,
-                                 "weapons" = l.weapon,
-                                 "vandalism" = vandalism,
-                                 "traffic" = traffic
-        ))
+
 # for crimeDT
 majorcrime <- majcrime |> 
     mutate(
         Crimetype = fct_collapse(Crimetype,
                                  "arson" = arson,
                                  "assault" = l.assault,
-                                 "auto theft" = l.auto_theft,
-                                 "auto burglary" = l.auto_burg,
+                                 "auto_theft" = l.auto_theft,
+                                 "auto_burglary" = l.auto_burg,
                                  "carjacking" = carjacking,
                                  "burglary" = l.burglary,
-                                 "disturb peace" = disturb_peace,
-                                 "drug sales" = l.drugsale,
+                                 "disturb_peace" = disturb_peace,
+                                 "drug_sales" = l.drugsale,
                                  "drugs/alcohol" = l.drugsalc,
                                  "dui" = dui,
                                  "fraud" = fraud,
                                  "homicide" = l.homicide,
-                                 "manslaughter" = manslaughter,
+                                 "unex_death" = unexdeath,
                                  "robbery" = l.robbery,
-                                 "sex offense" = l.sex_offense,
+                                 "sex_offense" = l.sex_offense,
                                  "theft" = theft,
                                  "traffic" = traffic,
                                  "weapons" = l.weapon,
                                  "vandalism" = vandalism,
-                                 "traffic" = traffic
-        ))
+                                 "traffic" = traffic))
 
 majorcrime  |> filter(useful::upper.case(Crimetype)) |> View()
+
 # TODOLAST: To see whether can automate the manual entry of categories as the 
 # name of the vector.
 # https://stackoverflow.com/questions/67142718/embracing-operator-inside-mutate-function
@@ -543,59 +504,36 @@ majorcrime  |> filter(useful::upper.case(Crimetype)) |> View()
 
 # separate out "minor" (in that minor == !major) crimes
 "%!in%" <- function(x,y) {!(x %in% y)}
-mincrime <- crimexyDT |> filter(CrimeType %!in% l.major)
 mincrime <- crimeDT |> filter(Crimetype %!in% l.major)
-crimexyDT |> colnames()
 # Lump all non-major crimes into one factor
-minorcrime <- mincrime |> mutate(
-    CrimeType = fct_lump_n(CrimeType, n = 0)
-)
 minorcrime <- mincrime |> mutate(
     Crimetype = fct_lump_n(Crimetype, n = 0)
 )
 
-
+# TODO: use to add to major crimes 
+# (domestic violence, forcible rape, narcotics, brandishing, etc.)
 mincrime |> 
-    group_by(CrimeTypeOrig) |>
+    group_by(CrimetypeOrig) |>
     distinct() |> 
     count() |> 
     arrange(desc(n)) |> 
     View()
-minorcrime |> sample_n(20)
-minorcrime |>  # lump didn't work. TODO
-    group_by(CrimeTypeOrig) |>
-    distinct() |> 
-    count() |> 
-    arrange(desc(n)) |> 
-    View()
+
 
 
 
 # Combine
 minmaj <- list(majorcrime, minorcrime)
 # NEW: changed name crime2 to crime1.1
-crimexyDT1.1 <- rbindlist(minmaj) |> data.table()
-crimeDT2 <- rbindlist(minmaj) |> data.table()
+crimeDT <- rbindlist(minmaj) |> data.table()
 
-write_rds(crimeDT2, "crimeDT2.rds")
-
-crimeDT2 <- read_rds("crimeDT2.rds")
+write_rds(crimeDT, "crime240502.rds")
 
 
+# remove all string cleaning variables
+vars_remove <- 1
+vars_remove <- ls()
+vars_remove <- vars_remove[!vars_remove %in% "crimeDT"]
+rm(list = vars_remove)
 
-# NEW
-rm(crime1.0)
-# rm(c(ssde, mk_str_vec, cch, ss)) # check if c() syntax works
-# 
-# 
-# 
-# 
-# 
-# 
-# 
-# 
-# 
-# 
-# 
-# 
-# 
+crimeDT |> View()
