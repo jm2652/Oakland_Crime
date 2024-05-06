@@ -10,7 +10,7 @@ The project consists of 7 components:
 
 • Tools for appending Census demographic information (using Kyle Walker's tidycensus package) to geographic boundary files, to create custom demographic shapefiles.
 
-• Tools for aggregating and standardizing crime dataset to enable analysis.
+• Tools for aggregating and standardizing crime dataset to facilitate analysis.
 
 • Data analysis and visualizations of crime trends, using regression and time series analysis to analyze trends across police beats, neighborhoods, and citywide.
 
