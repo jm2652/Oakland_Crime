@@ -16,7 +16,8 @@ cdt <- read_rds("Data/cDTclean.rds")
 netot <- read_rds("Data/netotcrime.rds")
 netot_norm <- read_rds("Data/netot_norm.rds")
 
-
+netot <- readRDS("Data/netotcrime.rds")
+netot |> View()
 
 # Getis-Ord GI* -----------------------------------------------------------
 
@@ -59,18 +60,6 @@ gilocal_crime <- function(crimename, year, demog, pixelsize) {
          xlim=c(-122.3, -122.114), ylim=c(37.725, 37.87))
     demog$One <- 1
     plot(demog["One"], col=NA,  border="gray", add=T)
-    # 
-    # # Plot
-    # # extract name of crime & convert to string
-    # title <- c[1,1] |> st_drop_geometry()
-    # title <- title$Crimetype |> as.character()
-    # # borders
-    # db <- tm_shape(demog) + tm_borders()
-    # qtm(r_grid) + 
-    #     db +
-    #     tm_layout(
-    #         main.title = paste(stringr::str_to_title(title), year),
-    #         legend.position = c("left", "bottom"))
 }
 gilocal_crime("robbery", 2022, netot, 150)
 
@@ -113,8 +102,8 @@ gi_map <- function(crime) {
     map(timeframe, gi, netot_norm, crime) |> list_rbind()
 }
 # Create list of full dataframes for each crime
-gi_all_norm_list <- map(crimenames_norm, gi_map)
-gi_all_norm_list |> write_rds("gi_all_norm_list.rds")
+gi_all_norm_list_neighb <- map(crimenames_norm, gi_map)
+gi_all_norm_list_neighb |> write_rds("gi_all_norm_list_neighb.rds")
 
 
 # Function that plots Getis-Ord GI* for given year and crime
@@ -140,27 +129,23 @@ gi_plot(2021, netot_norm, "auto theft_norm")
 
 # TODO: easily access for plotting. 
 # Problem: plot_sf requires columns to be in [""] form
-gi_all_norm_list[[1]][ncol(netot_norm)-1] |> View()
-plot(gi_all_norm_list[[1]][crimenames_norm[1]])
+gi_all_norm_list_neighb[[1]][ncol(netot_norm)-1] |> View()
+plot(gi_all_norm_list_neighb[[1]][crimenames_norm[1]])
 crimenames_norm[1]
 
 
-
-# TODO: understand relationship between netot and netot_norm totals. 
-# Should work because *_norm is just a scalar shift, but
-# they appear different
-gi_plot(2020, netot_norm, "arson_norm")
-gi_plot(2020, netot, "arson")
-gi(2020, netot_norm, "arson_norm") |> select(arson_norm_GI) |> View()
-gi(2020, netot, "arson") |> select(arson_GI) |> View()
-netot_norm |> select(starts_with("arson")) |> View()
-
-
-# TODO: animated tmap GIF
-gi_all_norm_list <- read_rds("gi_all_norm_list.rds")
-
-
-
+# GIF proof of concept using robbery
+gi_all_norm_list_neighb <- read_rds("gi_all_norm_list.rds")
+robbery_anim <- tm_shape(st_as_sf(gi_all_norm_list_neighb[[1]])) +
+    tm_fill("robbery_norm_GI") +
+    # tm_fill("robbery_norm_GI", midpoint = NA) + #TODO: compare
+    tm_polygons() +
+    tm_facets(by = "Year",
+              nrow = 1,
+              ncol = 1)
+robgif <- tmap_animation(robbery_anim, 
+               filename = "robbery_gi_anim.gif",
+               delay = 25)
 
 # Moran's I Statistic -----------------------------------------------------
 
@@ -298,3 +283,13 @@ plot_moran_local <- function(crime, year, demog) {
          pal=colorRampPalette(c("red", "gray", "blue")))
 }
 plot_moran_local("robbery_norm", 2021, netot_norm)
+
+
+
+# TODO: create pbtot counterparts
+
+
+
+
+
+
