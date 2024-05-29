@@ -11,6 +11,11 @@ library(purrr)
 source("Census.R")
 source("01_Clean_Geography.R")
 
+popacs <- read_rds("Data/popacs.rds")
+incageacs <- read_rds("Data/incageacs.rds")
+raceacs <- read_rds("Data/raceacs.rds")
+demoacs <- read_rds("Data/demoacs.rds")
+
 
 # Create demographic dataframes -------------------------------------------
 
@@ -30,7 +35,7 @@ demoacs <-
 # add back geometry
 st_geometry(demoacs) <- demoacs$geometry
 
-demoacs |> write_rds("demoacs.rds")
+demoacs |> write_rds("Data/demoacs.rds")
 
 # TODO: see if this is still necessary or if possible to use vector of
 # years from the demography dfs
@@ -89,10 +94,9 @@ compute_area <- function(demog, zonegeos, GEOID) {
 area_weights_pop <- function(computed_area) {
     computed_area |> 
         # find proportion, stripping m^2 unit
-        mutate(Proportion = as.numeric(AreaWithin / AreaTotal)) |>
-            # area weights
-            mutate(pops = estimate * Proportion)
+        mutate(Proportion = as.numeric(AreaWithin / AreaTotal))
 }
+
 weighted_sum_pop <- function(comparison_area) {
     # return weighted sum: population estimate taking into account
     # area of GEOID
@@ -114,7 +118,6 @@ narea_weights_pop <- function(neigh, shapefile, demog) {
 narea_weights_pop(
     "Chinatown", neighbs, popacs |> 
         filter(Year == 2020))
-
 
 # calculate police beat population
 pbarea_weights_pop <- function(beat, shapefile, demog) {
@@ -144,12 +147,22 @@ weighted_sum_race <- function(comparison_area) {
     comparison_area |> 
         st_drop_geometry() |> 
         # to retain column for joining function output
-        group_by(comparison_area[[15]]) |> # comparison[[15]] is beat or neighorhood
+        # comparison[[15]] is beat or neighorhood
+        group_by(AreaUnit = comparison_area[[15]]) |> 
+        
+        # calculate proportions based on area size
         summarize(
             across(White:Hispanic,
-                   \(x) with(comparison_area, sum(x * weights, na.rm = TRUE) /
-                                 sum(weights, na.rm = TRUE))))
-        
+                   \(x) with(comparison_area, 
+                             sum(x * weights, na.rm = TRUE)))) |> 
+        # calculate sum
+        mutate(Sum = sum(White, Black, Native,
+                         Asian, HIPI, Hispanic,
+                         na.rm = T)) |> 
+        # calculate percentages for area
+        summarise(AreaUnit,
+            across(White:Hispanic,
+                   \(x) x/Sum * 100))
 }
 
 
@@ -170,6 +183,8 @@ narea_weights_race(
     "Chinatown", neighbs, raceacs |> 
         filter(Year == 2020))
 
+
+
 # Calculate police beat race
 pbarea_weights_race <- function(beat, shapefile, demog) {
     
@@ -186,6 +201,9 @@ pbarea_weights_race <- function(beat, shapefile, demog) {
 pbarea_weights_race(
     "01X", policebeats, raceacs |> 
         filter(Year == 2020))
+pbarea_weights_race(
+    "01X", policebeats, raceacs |> 
+        filter(Year == 2020)) |> sum()
 
 
 # Calculate neighborhood income
@@ -281,7 +299,7 @@ narea_weights_medage(
 
 # calculate police beat age
 # Note: ages are not median ages found in ACS; they are averages 
-pbarea_weights_medage <- function(beat,  shapefile, demog) {
+pbarea_weights_medage <- function(beat, shapefile, demog) {
     
     create_zone(beat, shapefile, demog)
     
@@ -305,12 +323,7 @@ pbarea_weights_medage(
 
 # TODO: Function factory --------------------------------------------------
 
-# First try creating narea_weights_pop()
 
-#Error in comparison_area$estimate : 
-# object of type 'closure' is not subsettable
-# 
-# Probably has to do with calling functions outside the environment
 area_weights_pop <- function(areaunit, shapefile) {
     function(areaunit, shapefile, demog) {
         
@@ -323,12 +336,6 @@ area_weights_pop <- function(areaunit, shapefile) {
         weighted_sum_pop(comparison)
     }
 }
-npop <- area_weights_pop(neigh, neighbs)
-npop(
-    "Chinatown", neighbs, popacs |> 
-        filter(Year == 2020))
-
-
 
 
 
@@ -345,22 +352,25 @@ pbadd_stats <- function(year) {
     policebeats |>
         mutate(Pop = map_dbl(policebeats$Beat,
                              funcs[[1]],
+                             policebeats,
                              popacs |> filter(Year == year)),
                Age = map_dbl(policebeats$Beat,
                              funcs[[2]],
+                             policebeats,
                              incageacs |> filter(Year == year)),
                Income = map_dbl(policebeats$Beat,
                                 funcs[[3]],
+                                policebeats,
                                 incageacs |> filter(Year == year)),
         ) |>
         left_join(map_df(policebeats$Beat,
                          funcs[[4]],
+                         policebeats,
                          raceacs |> filter(Year == year)),
-                  join_by(Beat)) |>
+                  join_by(Beat == AreaUnit)) |>
         mutate(Year = as.integer(year),
                .before = Beat)
 }
-
 
 nadd_stats <- function(year) {
     funcs = c(narea_weights_pop,
@@ -371,29 +381,43 @@ nadd_stats <- function(year) {
     neighbs |>
         mutate(Pop = map_dbl(neighbs$Neighborhood,
                              funcs[[1]],
+                             neighbs,
                              popacs |> filter(Year == year)),
                Age = map_dbl(neighbs$Neighborhood,
                              funcs[[2]],
+                             neighbs,
                              incageacs |> filter(Year == year)),
                Income = map_dbl(neighbs$Neighborhood,
                                 funcs[[3]],
+                                neighbs,
                                 incageacs |> filter(Year == year)),
         ) |>
         left_join(map_df(neighbs$Neighborhood,
                          funcs[[4]],
+                         neighbs,
                          raceacs |> filter(Year == year)),
-                  join_by(Neighborhood)) |>
+                  join_by(Neighborhood == AreaUnit)) |>
         mutate(Year = as.integer(year),
                .before = Neighborhood)
 }
 
-# put all together for each
-demopbcorrect <- map_df(years, pbadd_stats)
-demone <- map_df(years, nadd_stats)
-# rough compute time: 20 minutes :(
+
+
+# Create demographics file for policebeats and neighborhoods
+demopolbeat <- map_df(years, pbadd_stats) # 11:30
+demoneighb <- map_df(years, nadd_stats) # 17:30
+# Reduced compute time, but can probably reduce it further.
 # TODO: see if clustering reduces compute time
 # TODO: explore whether sfheaders can do st_area() type alg or,
 #   alternatively, whether loading shps with it goes faster
 
-write_rds(demopb, "demopb.rds")
-write_rds(demone, "demone.rds")
+# Reorder
+demopolbeat <- demopolbeat |> relocate(geometry, .after = Hispanic)
+demoneighb <- demoneighb |> relocate(geometry, .after = Hispanic)
+
+
+
+write_rds(demopolbeat, "Data/demopolbeat0529.rds")
+write_rds(demoneighb, "Data/demoneighb0529.rds")
+
+
